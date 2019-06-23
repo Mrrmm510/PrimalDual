@@ -4,6 +4,9 @@ import numpy as np
 
 
 class TotalVariation:
+    """
+    Total Variation L1 model using the preconditioned primal dual algorithm
+    """
     def __init__(self, 
             lambd: float = 1.0, 
             max_iter: int = 1000, 
@@ -12,8 +15,6 @@ class TotalVariation:
             saturation: bool = False, 
             extended_output: bool = False):
         """
-        Total Variation L1 model using the preconditioned primal dual algorithm
-        
         Parameters
         ----------
         lambd : float
@@ -36,12 +37,12 @@ class TotalVariation:
         self.saturation = saturation
         self.extended_output = extended_output
         
-    def _tv(self, u: np.ndarray):
+    def _tv(self, u: np.ndarray) -> np.ndarray:
         ret = np.hstack((np.array([x - y for x, y in zip(u.T, u.T[1:])]).flatten(), 
                                  np.array([x - y for x, y in zip(u, u[1:])]).flatten()))
         return ret
         
-    def _transposed_tv(self, v: np.ndarray, shape: Tuple[int, int]):
+    def _transposed_tv(self, v: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
         h, w = shape[:2]
         ret = np.zeros(h * w)
         ret[:(h - 1) * w] += v[h * (w - 1):]
@@ -51,15 +52,17 @@ class TotalVariation:
             ret[i+1::w] -= v[i*h:(i+1)*h]
         return ret
     
-    def _projection(self, u: np.ndarray, vmin: float, vmax: float):
-        u[u < vmin] = vmin
-        u[u > vmax] = vmax
+    def _projection(self, u: np.ndarray, vmin: float = None, vmax: float = None) -> np.ndarray:
+        if vmin is not None:
+            u[u < vmin] = vmin
+        if vmax is not None:
+            u[u > vmax] = vmax
         return u
     
-    def _step_size(self, shape: Tuple[int, int]):
+    def _step_size(self, shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
         h, w = shape[:2]
         
-        tau = np.ones(h * w)
+        tau = np.ones(h * w) * self.lambd
         tau[:(h - 1) * w] += 1.
         tau[-(h - 1) * w:] += 1.
         for i in range(w - 1):
@@ -68,6 +71,7 @@ class TotalVariation:
         tau = 1. / tau
         sigma = np.ones(3 * h * w - h - w)
         sigma[:-h] += 1.
+        sigma[-h:] *= self.lambd
         sigma = 1. / sigma
         return tau, sigma
     
