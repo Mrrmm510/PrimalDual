@@ -38,8 +38,10 @@ class TotalVariation:
         self.extended_output = extended_output
         
     def _tv(self, u: np.ndarray) -> np.ndarray:
-        ret = np.hstack((np.array([x - y for x, y in zip(u.T, u.T[1:])]).flatten(), 
-                                 np.array([x - y for x, y in zip(u, u[1:])]).flatten()))
+        h, w = u.shape[:2]
+        ret = np.empty(2 * h * w - h - w)
+        ret[: h * w - h] = (u - np.roll(u, len(u.T)-1, axis=1)).T[:len(u.T)-1].flatten()
+        ret[h * w - h :] = (u - np.roll(u, len(u)-1, axis=0))[:len(u)-1].flatten()
         return ret
         
     def _transposed_tv(self, v: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
@@ -51,13 +53,6 @@ class TotalVariation:
             ret[i::w] += v[i*h:(i+1)*h]
             ret[i+1::w] -= v[i*h:(i+1)*h]
         return ret
-    
-    def _projection(self, u: np.ndarray, vmin: float = None, vmax: float = None) -> np.ndarray:
-        if vmin is not None:
-            u[u < vmin] = vmin
-        if vmax is not None:
-            u[u > vmax] = vmax
-        return u
     
     def _step_size(self, shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
         h, w = shape[:2]
@@ -95,7 +90,8 @@ class TotalVariation:
         
         # initialize
         res = np.copy(X)
-        dual = self._projection(sigma * np.hstack([self._tv(res), np.zeros(hw)]), -1, 1)
+        dual = np.zeros(3 * h * w - h - w)
+        dual[:-hw] = np.clip(sigma[:-hw] * self._tv(res), -1, 1)
         
         # objective function
         obj = list()
@@ -105,11 +101,13 @@ class TotalVariation:
         # main loop
         for _ in range(self.max_iter):
             if self.saturation:
-                u = self._projection(res - (tau * (self._transposed_tv(dual[:-hw], shape=(h, w)) + self.lambd * dual[-hw:])).reshape((h, w)), 0, 1)
+                u = np.clip(res - (tau * (self._transposed_tv(dual[:-hw], shape=(h, w)) + self.lambd * dual[-hw:])).reshape((h, w)), 0, 1)
             else:
                 u = res - (tau * (self._transposed_tv(dual[:-hw], shape=(h, w)) + self.lambd * dual[-hw:])).reshape((h, w))
             bar_u = 2 * u - res
-            dual = self._projection(dual + sigma * np.hstack([self._tv(bar_u), self.lambd * (bar_u - X).flatten()]), -1, 1)
+            dual[:-hw] += sigma[:-hw] * self._tv(bar_u)
+            dual[-hw:] += sigma[-hw:] * self.lambd * (bar_u - X).flatten()
+            dual = np.clip(dual, -1, 1)
             diff = u - res
             res = u
             if self.extended_output:
