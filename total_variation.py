@@ -7,12 +7,13 @@ class TotalVariation:
     """
     Total Variation L1 model using the preconditioned primal dual algorithm
     """
-    def __init__(self, 
-            lambd: float = 1.0, 
-            max_iter: int = 1000, 
+    def __init__(self,
+            lambd: float = 1.0,
+            max_iter: int = 1000,
+            coef: np.ndarray = np.array([1, -1]),
             tol: float = 1e-3,
             eps: float = 1e-16,
-            saturation: bool = False, 
+            saturation: bool = False,
             extended_output: bool = False):
         """
         Parameters
@@ -32,51 +33,64 @@ class TotalVariation:
         """
         self.lambd = lambd
         self.max_iter = max_iter
+        self.coef = coef
         self.tol = tol
         self.eps = eps
         self.saturation = saturation
         self.extended_output = extended_output
-        
+
     def _tv(self, u: np.ndarray) -> np.ndarray:
         h, w = u.shape[:2]
-        ret = np.empty(2 * h * w - h - w)
-        ret[: h * w - h] = (u - np.roll(u, len(u.T)-1, axis=1)).T[:len(u.T)-1].flatten()
-        ret[h * w - h :] = (u - np.roll(u, len(u)-1, axis=0))[:len(u)-1].flatten()
+        length = len(self.coef) - 1
+        ret = np.zeros(2 * h * w - length * (h + w))
+        for i, c in enumerate(self.coef):
+            ret[: h * w - length * h] += c * np.roll(u, -i, axis=1)[:, :-1 * length].flatten()
+            ret[h * w - length * h :] += c * np.roll(u, -i, axis=0)[:-1 * length].flatten()
         return ret
-        
+
     def _transposed_tv(self, v: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
         h, w = shape[:2]
-        ret = np.zeros(h * w)
-        ret[:(h - 1) * w] += v[h * (w - 1):]
-        ret[-(h - 1) * w:] -= v[h * (w - 1):]
-        for i in range(w - 1):
-            ret[i::w] += v[i*h:(i+1)*h]
-            ret[i+1::w] -= v[i*h:(i+1)*h]
+        hw = h * w
+        length = len(self.coef) - 1
+        u = h * (w - length)
+        l = w * (h - length)
+        ret = np.zeros(hw)
+        v0 = np.copy(v[:u])
+        for i in range(length):
+            v0 = np.insert(v0, [j * (w - length + i) for j in range(1, h)], 0)
+        for i, c in enumerate(self.coef):
+            ret[i : len(v0) + i] += c * v0
+            ret[w * i : l + w * i] += c * v[u:]
         return ret
-    
+
     def _step_size(self, shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
         h, w = shape[:2]
-        
-        tau = np.ones(h * w) * self.lambd
-        tau[:(h - 1) * w] += 1.
-        tau[-(h - 1) * w:] += 1.
-        for i in range(w - 1):
-            tau[i::w] += 1.
-            tau[i+1::w] += 1.
+        hw = h * w
+        abs_coef = np.abs(self.coef)
+        abs_sum = np.sum(abs_coef)
+        tau = np.full(h * w, self.lambd)
+        tile = np.zeros(w)
+        length = len(self.coef) - 1
+        l = w * (h - length)
+        for i in range(w - length):
+            tile[i : i + length + 1] += abs_coef
+        tau += np.tile(tile, h)
+        for i, c in enumerate(abs_coef):
+            tau[w * i : l + w * i] += c
         tau = 1. / tau
-        sigma = np.ones(3 * h * w - h - w)
-        sigma[:-h] += 1.
-        sigma[-h:] *= self.lambd
+        sigma = np.zeros(3 * h * w - length * (h + w))
+        sigma[:-hw] += abs_sum
+        sigma[-hw:] += self.lambd
         sigma = 1. / sigma
         return tau, sigma
-    
+
     def transform(self, X: np.ndarray) -> Tuple[np.ndarray, List[float]]:
         """
         Parameters
         ----------
         X : array, shape = (h, w)
             a 2D image
-            
+
         Returns
         ----------
         res : array, shape = (h, w)
@@ -87,17 +101,17 @@ class TotalVariation:
         h, w = X.shape[:2]
         hw = h * w
         tau, sigma = self._step_size((h, w))
-        
+
         # initialize
         res = np.copy(X)
-        dual = np.zeros(3 * h * w - h - w)
+        dual = np.zeros(3 * h * w - (len(self.coef) - 1) * (h + w))
         dual[:-hw] = np.clip(sigma[:-hw] * self._tv(res), -1, 1)
-        
+
         # objective function
         obj = list()
         if self.extended_output:
             obj.append(np.sum(np.abs(self._tv(res))) + self.lambd * np.sum(np.abs(res - X)))
-        
+
         # main loop
         for _ in range(self.max_iter):
             if self.saturation:
