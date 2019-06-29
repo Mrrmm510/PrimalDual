@@ -84,7 +84,7 @@ class TotalVariation3D:
         ret = self._transposed_tv_one(v[: index1], step=1)
 
         for i in range(d):
-            ret[i * hw: (i + 1) * hw] = self._transposed_tv_one(v[index1 + i * index2 : index1 + (i + 1) * index2], step=w)
+            ret[i * hw: (i + 1) * hw] += self._transposed_tv_one(v[index1 + i * index2 : index1 + (i + 1) * index2], step=w)
 
         ret += self._transposed_tv_one(v[index1 + d * index2 :], step=hw)
         return ret
