@@ -42,43 +42,53 @@ class TotalVariation:
 
         self.length = len(coef) - 1
 
-    def _tv(self, u: np.ndarray) -> np.ndarray:
-        h, w = u.shape[:2]
-        ret = np.zeros(2 * h * w - self.length * (h + w))
+    def _tv_one(self, u: np.ndarray, step: int) -> np.ndarray:
+        length = len(u) - self.length * step
+        ret = self.coef[0] * u[: length]
+        for i, c in enumerate(self.coef[1:]):
+            ret += c * u[(i + 1) * step: (i + 1) * step + length]
+        return ret
+
+    def _tv(self, u: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
+        h, w = shape
+        hw = h * w
+        ret = np.empty(2 * hw - self.length * (w + 1))
+        ret[: hw - self.length] = self._tv_one(u, step=1)
+        for i in range(self.length):
+            ret[: hw - self.length][w - self.length + i::w] = 0
+        ret[hw - self.length :] = self._tv_one(u, step=w)
+        return ret
+
+    def _transposed_tv_one(self, v: np.ndarray, step: int) -> np.ndarray:
+        length = len(v)
+        ret = np.zeros(length + self.length * step)
         for i, c in enumerate(self.coef):
-            ret[: h * w - self.length * h] += c * np.roll(u, -i, axis=1)[:, :-self.length].flatten()
-            ret[h * w - self.length * h :] += c * np.roll(u, -i, axis=0)[:-self.length].flatten()
+            ret[i * step: i * step + length] += c * v
         return ret
 
     def _transposed_tv(self, v: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
-        h, w = shape[:2]
-        hw = h * w
-        index1 = h * (w - self.length)
-        index2 = w * (h - self.length)
-        ret = np.zeros(hw)
-        v0 = np.copy(v[:index1])
-        for i in range(self.length):
-            v0 = np.insert(v0, [j * (w - self.length + i) for j in range(1, h)], 0)
-        for i, c in enumerate(self.coef):
-            ret[i : i + len(v0)] += c * v0
-            ret[w * i : w * i + index2] += c * v[index1:]
+        h, w = shape
+        index = h * w - self.length
+        ret = self._transposed_tv_one(v[index :], step=w)
+        ret += self._transposed_tv_one(v[: index], step=1)
         return ret
 
     def _step_size(self, shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
-        h, w = shape[:2]
+        h, w = shape
         hw = h * w
         index = w * (h - self.length)
         abs_coef = np.abs(self.coef)
         abs_sum = np.sum(abs_coef)
-        tau = np.full(hw, self.lambd)
-        tile = np.zeros(w)
-        for i in range(w - self.length):
-            tile[i : i + self.length + 1] += abs_coef
-        tau += np.tile(tile, h)
+
+        tau = np.full(hw, self.lambd + abs_sum)
+        for i in range(self.length):
+            tau[i] -= np.sum(abs_coef[i + 1 :])
+            tau[-(i + 1)] -= np.sum(abs_coef[: -(i + 1)])
         for i, c in enumerate(abs_coef):
             tau[w * i : w * i + index] += c
         tau = 1. / tau
-        sigma = np.zeros(3 * hw - self.length * (h + w))
+
+        sigma = np.zeros(3 * hw - self.length * (w + 1))
         sigma[:-hw] += abs_sum
         sigma[-hw:] += self.lambd
         sigma = 1. / sigma
@@ -103,29 +113,30 @@ class TotalVariation:
         tau, sigma = self._step_size((h, w))
 
         # initialize
-        res = np.copy(X)
-        dual = np.zeros(3 * h * w - (len(self.coef) - 1) * (h + w))
-        dual[:-hw] = np.clip(sigma[:-hw] * self._tv(res), -1, 1)
+        x = X.flatten()
+        res = np.copy(x)
+        dual = np.zeros(3 * hw - self.length * (w + 1))
+        dual[:-hw] = np.clip(sigma[:-hw] * self._tv(res, (h, w)), -1, 1)
 
         # objective function
         obj = list()
         if self.extended_output:
-            obj.append(np.sum(np.abs(self._tv(res))) + self.lambd * np.sum(np.abs(res - X)))
+            obj.append(np.sum(np.abs(self._tv(res, (h, w)))) + self.lambd * np.sum(np.abs(res - x)))
 
         # main loop
         for _ in trange(self.max_iter):
             if self.saturation:
-                u = np.clip(res - (tau * (self._transposed_tv(dual[:-hw], shape=(h, w)) + self.lambd * dual[-hw:])).reshape((h, w)), 0, 1)
+                u = np.clip(res - (tau * (self._transposed_tv(dual[:-hw], shape=(h, w)) + self.lambd * dual[-hw:])), 0, 1)
             else:
-                u = res - (tau * (self._transposed_tv(dual[:-hw], shape=(h, w)) + self.lambd * dual[-hw:])).reshape((h, w))
+                u = res - (tau * (self._transposed_tv(dual[:-hw], shape=(h, w)) + self.lambd * dual[-hw:]))
             bar_u = 2 * u - res
-            dual[:-hw] += sigma[:-hw] * self._tv(bar_u)
-            dual[-hw:] += sigma[-hw:] * self.lambd * (bar_u - X).flatten()
+            dual[:-hw] += sigma[:-hw] * self._tv(bar_u, (h, w))
+            dual[-hw:] += sigma[-hw:] * self.lambd * (bar_u - x)
             dual = np.clip(dual, -1, 1)
             diff = u - res
             res = u
             if self.extended_output:
-                obj.append(np.sum(np.abs(self._tv(res))) + self.lambd * np.sum(np.abs(res - X)))
+                obj.append(np.sum(np.abs(self._tv(res, (h, w)))) + self.lambd * np.sum(np.abs(res - x)))
             if np.linalg.norm(diff) / (np.linalg.norm(res) + self.eps) < self.tol:
                 break
-        return res, obj
+        return res.reshape(h, w), obj
