@@ -42,57 +42,77 @@ class TotalVariation3D:
 
         self.length = len(coef) - 1
 
-    def _tv(self, u: np.ndarray) -> np.ndarray:
-        d, h, w = u.shape
-        index1 = d * h * (w - self.length)
-        index2 = index1 + d * w * (h - self.length)
-        ret = np.zeros(3 * d * h * w - self.length * (h * w + w * d + d * h))
+    def _tv_one(self, u: np.ndarray, step: int) -> np.ndarray:
+        length = len(u) - self.length * step
+        ret = self.coef[0] * u[: length]
+        for i, c in enumerate(self.coef[1:]):
+            ret += c * u[(i + 1) * step: (i + 1) * step + length]
+        return ret
+
+    def _tv(self, u: np.ndarray, shape: Tuple[int, int, int]) -> np.ndarray:
+        d, h, w = shape
+        hw = h * w
+        dhw = d * hw
+        index1 = dhw - self.length
+        index2 = w * (h - self.length)
+        ret = np.empty(3 * dhw - self.length * (hw + w * d + 1))
+
+        ret[: index1] = self._tv_one(u, step=1)
+        for i in range(self.length):
+            ret[: index1][w - self.length + i::w] = 0
+
+        for i in range(d):
+            ret[index1 + i * index2: index1 + (i + 1) * index2] = self._tv_one(u[i * hw : (i + 1) * hw], step=w)
+
+        ret[index1 + d * index2 :] = self._tv_one(u, step=hw)
+        return ret
+
+    def _transposed_tv_one(self, v: np.ndarray, step: int) -> np.ndarray:
+        length = len(v)
+        ret = np.zeros(length + self.length * step)
         for i, c in enumerate(self.coef):
-            ret[: index1] += c * np.roll(u, -i, axis=2)[:, :, :-self.length].flatten()
-            ret[index1 : index2] += c * np.roll(u, -i, axis=1)[:, :-self.length].flatten()
-            ret[index2 :] += c * np.roll(u, -i, axis=0)[:-self.length].flatten()
+            ret[i * step: i * step + length] += c * v
         return ret
 
     def _transposed_tv(self, v: np.ndarray, shape: Tuple[int, int, int]) -> np.ndarray:
         d, h, w = shape
         hw = h * w
-        index1 = d * h * (w - self.length)
-        index2 = index1 + d * w * (h - self.length)
-        index3 = h * w * (d - self.length)
-        index4 = w * (h - self.length)
-        v0 = np.copy(v[:index1])
-        for i in range(self.length):
-            v0 = np.insert(v0, [j * (w - self.length + i) for j in range(1, h * d)], 0)
-        ret = np.zeros(hw * d)
-        for i, c in enumerate(self.coef):
-            ret[i : len(v0) + i] += c * v0
-            ret[hw * i : hw * i + index3] += c * v[index2:]
-            for j in range(d):
-                ret[i * w + j * hw : i * w + j * hw + index4] += c * v[index1 + j * w : index1 + j * w + index4]
+        dhw = d * hw
+        index1 = dhw - self.length
+        index2 = w * (h - self.length)
+
+        ret = self._transposed_tv_one(v[: index1], step=1)
+
+        for i in range(d):
+            ret[i * hw: (i + 1) * hw] = self._transposed_tv_one(v[index1 + i * index2 : index1 + (i + 1) * index2], step=w)
+
+        ret += self._transposed_tv_one(v[index1 + d * index2 :], step=hw)
         return ret
 
     def _step_size(self, shape: Tuple[int, int, int]) -> Tuple[np.ndarray, np.ndarray]:
         d, h, w = shape
         hw = h * w
-        hwd = hw * d
+        dhw = d * hw
         index1 = w * (h - self.length)
         index2 = h * w * (d - self.length)
         abs_coef = np.abs(self.coef)
         abs_sum = np.sum(abs_coef)
-        tau = np.full(hwd, self.lambd)
-        t = np.zeros(w)
-        for i in range(w - self.length):
-            t[i : i + self.length + 1] += abs_coef
-        tile = np.tile(t, h)
+
+        tau = np.full(dhw, self.lambd + abs_sum)
+        for i in range(self.length):
+            tau[i] -= np.sum(abs_coef[i + 1 :])
+            tau[-(i + 1)] -= np.sum(abs_coef[: -(i + 1)])
+        tile = np.zeros(hw)
         for i, c in enumerate(abs_coef):
             tile[w * i : w * i + index1] += c
         tau += np.tile(tile, d)
         for i, c in enumerate(abs_coef):
             tau[hw * i : hw * i + index2] += c
         tau = 1. / tau
-        sigma = np.zeros(4 * hwd - self.length * (hw + w * d + d * h))
-        sigma[:-hwd] += abs_sum
-        sigma[-hwd:] += self.lambd
+
+        sigma = np.zeros(4 * d * hw - self.length * (hw + w * d + 1))
+        sigma[:-dhw] += abs_sum
+        sigma[-dhw:] += self.lambd
         sigma = 1. / sigma
         return tau, sigma
 
@@ -112,33 +132,34 @@ class TotalVariation3D:
         """
         d, h, w = X.shape[:3]
         hw = h * w
-        hwd = hw * d
+        dhw = hw * d
         tau, sigma = self._step_size((d, h, w))
 
         # initialize
-        res = np.copy(X)
-        dual = np.zeros(4 * hwd - self.length * (hw + w * d + d * h))
-        dual[:-hwd] = np.clip(sigma[:-hwd] * self._tv(res), -1, 1)
+        x = X.flatten()
+        res = np.copy(x)
+        dual = np.zeros(4 * dhw - self.length * (hw + w * d + 1))
+        dual[:-dhw] = np.clip(sigma[:-dhw] * self._tv(res, (d, h, w)), -1, 1)
 
         # objective function
         obj = list()
         if self.extended_output:
-            obj.append(np.sum(np.abs(self._tv(res))) + self.lambd * np.sum(np.abs(res - X)))
+            obj.append(np.sum(np.abs(self._tv(res, (d, h, w)))) + self.lambd * np.sum(np.abs(res - x)))
 
         # main loop
         for _ in trange(self.max_iter):
             if self.saturation:
-                u = np.clip(res - (tau * (self._transposed_tv(dual[:-hwd], shape=(d, h, w)) + self.lambd * dual[-hwd:])).reshape((d, h, w)), 0, 1)
+                u = np.clip(res - (tau * (self._transposed_tv(dual[:-dhw], shape=(d, h, w)) + self.lambd * dual[-dhw:])), 0, 1)
             else:
-                u = res - (tau * (self._transposed_tv(dual[:-hwd], shape=(d, h, w)) + self.lambd * dual[-hwd:])).reshape((d, h, w))
+                u = res - (tau * (self._transposed_tv(dual[:-dhw], shape=(d, h, w)) + self.lambd * dual[-dhw:]))
             bar_u = 2 * u - res
-            dual[:-hwd] += sigma[:-hwd] * self._tv(bar_u)
-            dual[-hwd:] += sigma[-hwd:] * self.lambd * (bar_u - X).flatten()
+            dual[:-dhw] += sigma[:-dhw] * self._tv(bar_u, (d, h, w))
+            dual[-dhw:] += sigma[-dhw:] * self.lambd * (bar_u - x)
             dual = np.clip(dual, -1, 1)
             diff = u - res
             res = u
             if self.extended_output:
-                obj.append(np.sum(np.abs(self._tv(res))) + self.lambd * np.sum(np.abs(res - X)))
+                obj.append(np.sum(np.abs(self._tv(res, (d, h, w)))) + self.lambd * np.sum(np.abs(res - x)))
             if np.linalg.norm(diff) / (np.linalg.norm(res) + self.eps) < self.tol:
                 break
-        return res, obj
+        return res.reshape((d, h, w)), obj
