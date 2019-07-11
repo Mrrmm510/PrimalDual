@@ -1,4 +1,4 @@
-# Total Variation Model Using Preconditioned Primal Dual Algorithm
+# Methods Using Preconditioned Primal Dual Algorithm
 
 ## Requirements
 
