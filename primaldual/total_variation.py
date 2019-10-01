@@ -12,7 +12,6 @@ class TotalVariation:
             lambd: float = 1.0,
             max_iter: int = 1000,
             coef: np.ndarray = np.array([1, -1]),
-            eps: float = 1e-16,
             saturation: bool = False,
             extended_output: bool = False):
         """
@@ -22,8 +21,8 @@ class TotalVariation:
             A regularization parameter.
         max_iter : int
             The maximum number of iterations.
-        eps : float
-            a value to avoid divided by zero error.
+        coef : np.ndarray
+            [1, -1] for total valiation regularization
         saturation : bool
             If True, output will be in a range [0, 1].
         extended_output : bool
@@ -32,7 +31,6 @@ class TotalVariation:
         self.lambd = lambd
         self.max_iter = max_iter
         self.coef = coef
-        self.eps = eps
         self.saturation = saturation
         self.extended_output = extended_output
 
